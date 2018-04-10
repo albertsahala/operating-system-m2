@@ -14,6 +14,7 @@
 #define INSUFFICIENT_ENTRIES -3
 #define EMPTY 0x00
 #define USED 0xFF
+#define ARGS_SECTOR 512
 
 void handleInterrupt21 (int AX, int BX, int CX, int DX);
 void printString(char *string);
@@ -22,12 +23,19 @@ int mod(int a, int b);
 int div(int a, int b);
 void readSector(char *buffer, int sector);
 void writeSector(char *buffer, int sector);
-void readFile(char *buffer, char *filename, int *success);
 void clear(char *buffer, int length);
 void writeFile(char *buffer, char *filename, int *sectors);
-void executeProgram(char *filename, int segment, int *success);
+void readFile(char *buffer, char *path, int *result, char parentIndex);
+void deleteFile(char *path, int *result, char parentIndex);
+void executeProgram(char *path, int segment, int *result, char parentIndex);
+void terminateProgram(int *result);
 void writeText(char c, int i, int color);
 void makeDirectory(char *path, int *result, char parentIndex);
+void deleteDirectory(char *path, int *success, char parentIndex);
+void putArgs (char curdir, char argc, char **argv);
+void getCurdir (char *curdir);
+void getArgc (char *argc);
+void getArgv (char index, char *argv);
 void splashScreen();
 
 int main() {
@@ -53,13 +61,17 @@ int main() {
   while (1);
 }
 
-void handleInterrupt21 (int AX, int BX, int CX, int DX){
-  switch (AX) {
+void handleInterrupt21 (int AX, int BX, int CX, int DX) {
+  char AL, AH;
+  AL = (char) (AX);
+  AH = (char) (AX >> 8);
+
+  switch (AL) {
     case 0x00:
-      printString (BX);
+      printString(BX);
       break;
     case 0x01:
-      readString (BX);
+      readString(BX);
       break;
     case 0x02:
       readSector(BX, CX);
@@ -68,25 +80,25 @@ void handleInterrupt21 (int AX, int BX, int CX, int DX){
       writeSector(BX, CX);
       break;
     case 0x04:
-      readFile(BX, CX, DX);
+      readFile(BX, CX, DX, AH);
       break;
     case 0x05:
-      writeFile(BX, CX, DX);
+      writeFile(BX, CX, DX, AH);
       break;
     case 0x06:
-      executeProgram(BX, CX, DX);
+      executeProgram(BX, CX, DX, AH);
       break;
     case 0x07:
       terminateProgram(BX);
       break;
     case 0x08:
-      //makeDirectory(BX, CX, AH);
+      makeDirectory(BX, CX, AH);
       break;
     case 0x09:
-      //deleteFile(BX, CX, AH);
+      deleteFile(BX, CX, AH);
       break;
     case 0x0A:
-      //deleteDirectory(BX, CX, AH);
+      deleteDirectory(BX, CX, AH);
       break;
     case 0x20:
       putArgs(BX, CX);
@@ -97,12 +109,12 @@ void handleInterrupt21 (int AX, int BX, int CX, int DX){
     case 0x22:
       getArgc(BX);
       break;
-    case 0x23:
+    case 0X23:
       getArgv(BX, CX);
       break;
     default:
-      printString("Invalid interrupt");
-    }
+    printString("Invalid interrupt");
+  }
 }
 
 void printString(char *string) {
@@ -175,119 +187,10 @@ void writeSector(char *buffer, int sector) {
   interrupt(0x13, 0x301, buffer, div(sector, 36) * 0x100 + mod(sector, 18) + 1, mod(div(sector, 18), 2) * 0x100);
 }
 
-void readFile(char *buffer, char *filename, int *success) {
-  char dir[SECTOR_SIZE];
-  int sectors[MAX_SECTORS];
-  int i = 0;
-
-  (*success) = FALSE;
-
-  /* Read in the directory sector */
-  readSector(dir, DIR_SECTOR);
-  /* Try to find the file name */
-
-  while(*success == FALSE && i < MAX_FILES) {
-    int entry = i*DIR_ENTRY_LENGTH;
-    if (dir[entry] != 0x0) {
-      int j = 0;
-      while(j < MAX_FILENAME && filename[j] != '\0') {
-        if (dir[entry + j] != filename[j]) {
-          break;
-        } else {
-          j++;
-        }
-      }
-      if (filename[j] == '\0') {
-        int k;
-        int indeks = entry + MAX_FILENAME;
-        for(k = 0; k < MAX_SECTORS; k++) {
-          sectors[k] = dir[indeks + k];
-        }
-
-        for(k = 0; k < MAX_SECTORS; k++) {
-          readSector(buffer + k * SECTOR_SIZE, sectors[k]);
-        }
-        *success = TRUE;
-      }
-    }
-    i++;
-  }
-  if ((*success) = FALSE) {
-    printString("File not Found\n");
-  }
-}
-
 void clear(char *buffer, int length) {
   int i;
   for(i = 0; i < length; ++i) {
     buffer[i] = EMPTY;
-  }
-}
-
-void writeFile(char *buffer, char *filename, int *sectors) {
-  char map[SECTOR_SIZE];
-  char dir[SECTOR_SIZE];
-  char sectorBuffer[SECTOR_SIZE];
-  int dirIndex;
-  readSector(map, MAP_SECTOR);
-  readSector(dir, DIR_SECTOR);
-  for (dirIndex = 0; dirIndex < MAX_FILES; ++dirIndex) {
-    if (dir[dirIndex * DIR_ENTRY_LENGTH] == '\0') {
-      break;
-    }
-  }
-  if (dirIndex < MAX_FILES) {
-    int i, j, sectorCount;
-    for (i = 0, sectorCount = 0; i < MAX_BYTE && sectorCount < *sectors; ++i) {
-      if (map[i] == EMPTY) {
-      ++sectorCount;
-      }
-    }
-    if (sectorCount < *sectors) {
-      *sectors = INSUFFICIENT_SECTORS;
-      return;
-    } else {
-      clear(dir + dirIndex * DIR_ENTRY_LENGTH, DIR_ENTRY_LENGTH);
-      for (i = 0; i < MAX_FILENAME; ++i) {
-        if (filename[i] != '\0') {
-          dir[dirIndex * DIR_ENTRY_LENGTH + i] = filename[i];
-        } else {
-          break;
-        }
-      }
-      for (i = 0, sectorCount = 0; i < MAX_BYTE && sectorCount < *sectors; ++i) {
-        if (map[i] == EMPTY) {
-          map[i] = USED;
-          dir[dirIndex * DIR_ENTRY_LENGTH + MAX_FILENAME + sectorCount] = i;
-          clear(sectorBuffer, SECTOR_SIZE);
-          for (j = 0; j < SECTOR_SIZE; ++j) {
-            sectorBuffer[j] = buffer[sectorCount * SECTOR_SIZE + j];
-          }
-          writeSector(sectorBuffer, i);
-          ++sectorCount;
-        }
-      }
-    }
-  }
-  else {
-    *sectors = INSUFFICIENT_DIR_ENTRIES;
-    return;
-  }
-  writeSector(map, MAP_SECTOR);
-  writeSector(dir, DIR_SECTOR);
-}
-
-void executeProgram(char *filename, int segment, int *success) {
-  char buffer[MAX_SECTORS*SECTOR_SIZE];;
-
-  readFile(buffer, filename, &success);
-
-  if (*success = TRUE) {
-    int i;
-    for(i = 0; i < MAX_SECTORS*SECTOR_SIZE; i++) {
-      putInMemory(segment, i, buffer[i]);
-    } 
-    launchProgram(segment);
   }
 }
 
@@ -318,6 +221,248 @@ void searchDirectory_V2(char *dir, char *path, int *result, char *parentIndex){
   }
 
   *result = check;
+}
+
+void writeFile(char *buffer, char *path, int *sectors, char parentIndex){
+  char data[SECTOR_SIZE];
+  char buffer_data[SECTOR_SIZE];
+  char directory_name[15];
+  int check;
+  int count;
+  int free_idx;
+  int i;
+  int j;
+
+  check = 0;
+  count = 0;
+  readSector(data,0x100);
+  for (i = 0; i < SECTOR_SIZE; i++){
+    if (data[i] == '\0'){
+      count++;
+    }
+    if ((j+1) == *sectors){
+      check = 1;
+      break;
+    }
+  }
+
+  if (check != 1){
+    readSector(data,0x102);
+    check = -3;
+    for (i = 0; i < 32; i++){
+      if (data[i*16] == '\0'){
+        free_idx = i;
+        break;
+      }
+    }
+    if (check != 1){
+      *sectors = check;
+    } else {
+      readSector(data,0x101);
+
+      for (i = 0; i < 15; i++){
+        directory_name[i] = '\0';
+      }
+
+      i = 1;
+      while (path[i] != '\0'){  //Iterating until name of directory to be deleted reached
+        j = 0;
+        while ((path[i] != '/') && (path[i] != '\0')){  //Parsing the path to a new array of string
+          directory_name[j] = path[i];
+          i++;
+          j++;
+        }
+        directory_name[i] = '\0';
+        searchDirectory_V2(data,directory_name,&check,&parentIndex); //Searching whether the current path exists
+        if (check){   //Path exist, continue checking next path
+          for (j = 0; j < 15; j++){
+            directory_name[j] = '\0';
+          }
+          i++;
+        } else {  //Path does not exist, abort send error -1
+          check = -1;
+          break;
+        }
+      }
+
+      if (check != 1){
+        *sectors = check;
+      } else {
+        readSector(data,0x102);
+        searchDirectory_V2(data,directory_name,&check,&parentIndex);
+
+        if (!(check)){
+          data[free_idx*16] = parentIndex;
+          i = 0;
+          while(directory_name[i] != '\0'){
+            data[free_idx*16+i+1] = directory_name[i];
+            i++;
+          }
+          writeSector(data,0x102);
+
+          readSector(data,0x100);
+          for (i = 0; i < *sectors; i++){
+            if (data[i] == '\0'){
+              data[i] = 0xFF;
+              for (j = 0; j < SECTOR_SIZE; j++){
+                buffer_data[i] = '\0';
+                buffer_data[i] = buffer[i * SECTOR_SIZE + j];
+                writeSector(buffer_data,i);
+              }
+            }
+
+            if (i > 15){
+              break;
+            }
+          }
+          writeSector(data,0x100);
+        } else {
+          *sectors = -2;
+        }
+      }
+    }
+  } else {
+    *sectors = check;
+  }
+}
+
+void deleteFile(char *path, int *result, char parentIndex){
+  char directory_name[15];
+  char data[SECTOR_SIZE];
+  int check;
+  int i;
+  int j;
+
+  for (i = 0; i < 15; i++){
+    directory_name[i] = '\0';
+  }
+
+  readSector(data,0x101);
+  i = 1;
+  while (path[i] != '\0'){  //Iterating until name of directory to be deleted reached
+    j = 0;
+    while ((path[i] != '/') && (path[i] != '\0')){  //Parsing the path to a new array of string
+      directory_name[j] = path[i];
+      i++;
+      j++;
+    }
+    directory_name[i] = '\0';
+    if (path[i] != '\0'){
+      searchDirectory_V2(data,directory_name,&check,&parentIndex); //Searching whether the current path exists
+      if (check){   //Path exist, continue checking next path
+        for (j = 0; j < 15; j++){
+          directory_name[j] = '\0';
+        }
+        i++;
+      } else {  //Path does not exist, abort send error -1
+        check = -1;
+        break;
+      }
+    }
+  }
+
+  if (check != 1){
+    readSector(data,0x102);
+    searchDirectory_V2(data,directory_name,&check,&parentIndex);
+
+    if (check){
+      data[parentIndex*16] = '\0';
+
+      readSector(data,0x103);
+      i = 0;
+      while (data[parentIndex*16+i] != '\0'){
+        j = data[parentIndex*16+i];
+        readSector(data,0x100);
+        data[j] = '\0';
+        i++;
+        readSector(data,0x103);
+      }
+
+      check = 0;
+    } else {
+      check = -1;
+    }
+  }
+
+  *result = check;
+}
+
+void readFile(char *buffer, char *path, int *result, char parentIndex){
+  char data[512];
+  char file_data[512];
+  char directory_name[15];
+  int check;
+  int i;
+  int j;
+  int k;
+
+  i = 1;
+  check = 0;
+  readSector(data,0x101);
+  while (data[i] != '\0'){
+    j = 0;
+    while ((path[i] != '/') && (path[i] != '\0')){
+      directory_name[j] = path[i];
+      i++;
+      j++;
+    }
+    directory_name[i] = '\0';
+    if (path[i] != '\0'){
+      searchDirectory_V2(data,directory_name,&check,&parentIndex);
+      if (check){
+        for (j = 0; j < 15; j++){
+          directory_name[j] = '\0';
+        }
+        i++;
+      } else {
+        check = -1;
+        break;
+      }
+    }
+  }
+
+  if (check == 0){
+    readSector(data,0x102);
+    searchDirectory_V2(data,directory_name,&check,&parentIndex);
+
+    if (check){
+      readSector(data,0x103);
+      k = 0;
+      i = 0;
+      while(data[parentIndex*16 + i] != '\0'){
+        readSector(file_data,data[parentIndex*16+i]);
+        for(j = 0; j < SECTOR_SIZE; j++){
+          buffer[k] = file_data[j];
+          k++;
+        }
+        i++;
+      }
+      check = 0;
+    } else {
+      check = -1;
+    }
+  }
+
+  *result = check;
+}
+
+void executeProgram(char *path, int segment, int *result, char parentIndex) {
+  char buffer[16*SECTOR_SIZE];
+
+  clear(buffer,16*SECTOR_SIZE);
+  readFile(buffer,path,result,parentIndex);
+
+  if (*result == 0) {
+    int i;
+    for(i = 0; i < 16*SECTOR_SIZE; i++) {
+      putInMemory(segment, i, buffer[i]);
+    } 
+    launchProgram(segment);
+  }
+}
+
+void terminateProgram(int *result){
+  
 }
 
 void deleteDirectories(char *dir, char parentIndex){
@@ -382,6 +527,7 @@ void deleteDirectory(char* dir, char *path, int *success, char parentIndex){
     deleteDirectories(dir,parentIndex); //Delete all of the directory inside of current directory
   }
 
+  writeSector(dir,0x101);
   *success = check; //Send program execution status
 }
 
@@ -445,6 +591,7 @@ void makeDirectory(char *path, int *result, char parentIndex){
         i++;
       }
       check = 0;
+      writeSector(dir,0x101);
     } else {  //Directory already exist, abort
       check = -2;
     }
@@ -452,3 +599,60 @@ void makeDirectory(char *path, int *result, char parentIndex){
 
   *result = check;
 }
+
+void putArgs (char curdir, char argc, char **argv) {
+  char args[SECTOR_SIZE];
+  int i, j, p;
+  clear(args, SECTOR_SIZE);
+  
+  args[0] = curdir;
+  args[1] = argc;
+  i = 0;
+  j = 0;
+  for (p = 1; p < ARGS_SECTOR && i < argc; ++p) {
+    args[p] = argv[i][j];
+    if (argv[i][j] == '\0') {
+      ++i;
+      j = 0;
+    } else {
+      ++j;
+    }
+  }
+  writeSector(args, ARGS_SECTOR);
+}
+
+void getCurdir (char *curdir) {
+  char args[SECTOR_SIZE];
+  readSector(args, ARGS_SECTOR);
+  
+  *curdir = args[0];
+}
+
+void getArgc (char *argc) {
+  char args[SECTOR_SIZE];
+  readSector(args, ARGS_SECTOR);
+  *argc = args[1];
+}
+
+void getArgv (char index, char *argv) {
+  char args[SECTOR_SIZE];
+  int i, j, p;
+  readSector(args, ARGS_SECTOR);
+  i = 0;
+  j = 0;
+  for (p = 1; p < ARGS_SECTOR; ++p) {
+    if (i == index) {
+      argv[j] = args[p];
+      ++j;
+    }
+    
+    if (args[p] == '\0') {
+      if (i == index) {
+        break;
+      } else {
+        ++i;
+      }
+    }
+  }
+}
+
